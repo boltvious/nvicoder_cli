@@ -12,8 +12,11 @@ import json
 import os
 import time
 import random
+import base64
+import re
 from dataclasses import dataclass, field
 from typing import Optional
+from pathlib import Path
 
 from openai import (
     OpenAI, APIError, RateLimitError, AuthenticationError, PermissionDeniedError,
@@ -506,11 +509,86 @@ class Agent:
             self.model_override = original_model
             self.messages = original_messages
 
+    def _auto_inject_images_from_prompt(self, user_input: str):
+        """Auto-detect file gambar di prompt user dan inject sebagai base64.
+        
+        Mendeteksi pola seperti 'test1.jpg', 'gambar.png', dll di user input,
+        lalu membaca file tersebut dan mengubahnya menjadi format vision yang bisa
+        dimengerti model (list dengan text + image_url).
+        """
+        # Pattern untuk mendeteksi nama file gambar (case insensitive)
+        image_pattern = r'\b([a-zA-Z0-9_\-./\\]+\.(?:jpg|jpeg|png|gif|webp|bmp))\b'
+        matches = re.findall(image_pattern, user_input, re.IGNORECASE)
+        
+        if not matches:
+            # Tidak ada file gambar, kembalikan input asli
+            return user_input
+        
+        # Cek apakah model support vision
+        current_model = self.model_override or self.model
+        if not config.is_vision_model(current_model):
+            ui.print_info("⚠️ File gambar terdeteksi, tapi model saat ini tidak support vision")
+            return user_input
+        
+        # Baca semua file gambar yang ditemukan dan convert ke base64
+        images_found = []
+        for img_path in matches:
+            path = Path(img_path)
+            # Coba relatif dari cwd dulu, kalo gak ada coba absolute
+            if not path.exists():
+                continue
+            
+            try:
+                # Baca file dan encode ke base64
+                with open(path, 'rb') as f:
+                    img_data = base64.b64encode(f.read()).decode('utf-8')
+                
+                # Deteksi MIME type dari extension
+                ext = path.suffix.lower()
+                mime_map = {
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.png': 'image/png',
+                    '.gif': 'image/gif',
+                    '.webp': 'image/webp',
+                    '.bmp': 'image/bmp',
+                }
+                mime_type = mime_map.get(ext, 'image/jpeg')
+                
+                images_found.append({
+                    'path': str(path),
+                    'data': img_data,
+                    'mime_type': mime_type,
+                })
+                ui.print_info(f"👁️ Vision: Auto-load {img_path} ({len(img_data)} bytes base64)")
+            except Exception as e:
+                ui.print_error(f"Gagal membaca {img_path}: {e}")
+        
+        if not images_found:
+            return user_input
+        
+        # Buat enhanced input dengan gambar dalam format vision
+        enhanced_content = [
+            {"type": "text", "text": user_input}
+        ]
+        
+        for img in images_found:
+            data_url = f"data:{img['mime_type']};base64,{img['data']}"
+            enhanced_content.append({
+                "type": "image_url",
+                "image_url": {"url": data_url}
+            })
+        
+        return enhanced_content
+
     def run_turn(self, user_input: str) -> None:
         """Proses satu input user sampai model selesai memberi jawaban final."""
         
+        # Auto-detect dan inject gambar jika user menyebut file gambar di prompt
+        enhanced_input = self._auto_inject_images_from_prompt(user_input)
+        
         # Phase 1: Execution with assistant model (Muse) or single model
-        self.messages.append({"role": "user", "content": user_input})
+        self.messages.append({"role": "user", "content": enhanced_input})
         
         # Set model for execution phase
         if self.dual_model_enabled:
