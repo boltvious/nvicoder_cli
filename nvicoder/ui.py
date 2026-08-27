@@ -55,16 +55,45 @@ def help_text() -> str:
     )
 
 
-def print_tool_call(name: str, arguments: dict) -> None:
+def _tool_call_one_line(name: str, arguments: dict) -> str:
+    """Buat ringkasan 1 baris dari tool call untuk tampilan compact."""
     args_preview = str(arguments)
-    if len(args_preview) > 160:
-        args_preview = args_preview[:160] + "..."
-    console.print(f"\n[magenta][tool][/magenta] [bold]{name}[/bold]([dim]{args_preview}[/dim])")
+    if len(args_preview) > 80:
+        args_preview = args_preview[:77] + "..."
+    return f"[dim]🔧 {name}({args_preview})[/dim]"
+
+
+def print_tool_call(name: str, arguments: dict) -> None:
+    """Tampilkan tool call sebagai teks 1 baris yang compact."""
+    console.print(_tool_call_one_line(name, arguments))
+
+
+def _tool_result_one_line(result: str, max_chars: int = 100) -> str:
+    """Buat ringkasan 1 baris dari tool result untuk tampilan compact."""
+    if not result:
+        return "[dim]✅ (no output)[/dim]"
+    
+    # Hitung jumlah baris
+    lines = result.splitlines()
+    line_count = len(lines)
+    
+    # Ambil preview kecil
+    preview = result[:max_chars]
+    if len(result) > max_chars:
+        preview += "..."
+    
+    # Escape karakter baru jadi spasi
+    preview = preview.replace("\n", " ").replace("\r", " ")
+    
+    if line_count == 1:
+        return f"[dim]✅ {preview}[/dim]"
+    else:
+        return f"[dim]✅ ({line_count} baris) {preview}[/dim]"
 
 
 def print_tool_result(result: str) -> None:
-    # Tampilkan full output supaya bisa di-copy-paste seperti Claude Code
-    console.print(f"[dim]{result}[/dim]")
+    """Tampilkan tool result sebagai teks 1 baris yang compact."""
+    console.print(_tool_result_one_line(result))
 
 
 def print_error(msg: str) -> None:
