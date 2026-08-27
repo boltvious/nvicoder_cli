@@ -949,17 +949,19 @@ def _call_vision_model(image_path: str, question: str, max_retries: int = 3) -> 
                     from openai import OpenAI
                     client = OpenAI(
                         base_url="https://integrate.api.nvidia.com/v1",
-                        api_key=config.get_nvidia_key()
+                        api_key=config.NVIDIA_API_KEY
                     )
                 elif provider == "mistral":
+                    # Ambil key pertama dari list MISTRAL_API_KEYS
+                    mistral_key = config.MISTRAL_API_KEYS[0] if config.MISTRAL_API_KEYS else ""
                     client = OpenAI(
                         base_url="https://api.mistral.ai/v1",
-                        api_key=config.get_mistral_key()
+                        api_key=mistral_key
                     )
                 elif provider == "groq":
                     client = OpenAI(
                         base_url="https://api.groq.com/openai/v1",
-                        api_key=config.get_groq_key()
+                        api_key=config.GROQ_API_KEY
                     )
                 else:
                     continue
