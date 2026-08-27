@@ -916,11 +916,11 @@ def open_editor(
             pass
 
 
-def analyze_image(image_path: str, question: str = "Deskripsikan gambar ini secara detail") -> dict:
+def analyze_image(image_path: str, question: str = "Deskripsikan gambar ini secara detail") -> str:
     """Analisis gambar menggunakan model vision meta/muse-glimmer-30b.
     
     Returns:
-        {"text": str, "images": []} - hasil analisis dari model vision
+        str - hasil analisis dari model vision (hanya teks)
     """
     from .agent import _call_vision_model
     
@@ -942,12 +942,12 @@ def analyze_image(image_path: str, question: str = "Deskripsikan gambar ini seca
         else:
             # Local file
             if not os.path.isfile(image_path):
-                return {"text": _err(f"File gambar tidak ditemukan: {image_path}"), "images": []}
+                return _err(f"File gambar tidak ditemukan: {image_path}")
             result = _call_vision_model(image_path, question)
         
-        return {"text": result, "images": []}
+        return result
     except Exception as e:
-        return {"text": _err(f"Gagal menganalisis gambar: {e}"), "images": []}
+        return _err(f"Gagal menganalisis gambar: {e}")
 
 
 DISPATCH = {
