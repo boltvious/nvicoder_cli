@@ -337,33 +337,6 @@ TOOLS_SCHEMA = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "analyze_image",
-            "description": (
-                "Analisis gambar menggunakan model vision (meta/muse-glimmer-30b). Bisa menerima "
-                "file gambar lokal atau URL. Berguna untuk: membaca screenshot error, menganalisis "
-                "UI/UX, OCR teks dari gambar, mendeteksi objek, atau memahami diagram/chart. "
-                "Model vision ini lebih kecil dan cepat dibanding model utama."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "image_path": {
-                        "type": "string",
-                        "description": "Path file gambar lokal atau URL gambar.",
-                    },
-                    "question": {
-                        "type": "string",
-                        "description": "Pertanyaan atau instruksi analisis (opsional, default: 'Deskripsikan gambar ini secara detail').",
-                        "default": "Deskripsikan gambar ini secara detail"
-                    }
-                },
-                "required": ["image_path"]
-            },
-        },
-    },
 ]
 
 
@@ -917,37 +890,11 @@ def open_editor(
 
 
 def analyze_image(image_path: str, question: str = "Deskripsikan gambar ini secara detail") -> str:
-    """Analisis gambar menggunakan model vision meta/muse-glimmer-30b.
+    """DEPRECATED: Model default sekarang meta/muse-glimmer-30b sudah support vision native.
     
-    Returns:
-        str - hasil analisis dari model vision (hanya teks)
+    Tool ini tidak digunakan lagi. Gambar bisa langsung dikirim ke model utama.
     """
-    from .agent import _call_vision_model
-    
-    try:
-        # Cek apakah path file atau URL
-        if image_path.startswith(('http://', 'https://')):
-            # URL - download dulu
-            import urllib.request
-            import tempfile
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
-                urllib.request.urlretrieve(image_path, tmp.name)
-                tmp_path = tmp.name
-            
-            try:
-                result = _call_vision_model(tmp_path, question)
-            finally:
-                os.unlink(tmp_path)
-        else:
-            # Local file
-            if not os.path.isfile(image_path):
-                return _err(f"File gambar tidak ditemukan: {image_path}")
-            result = _call_vision_model(image_path, question)
-        
-        return result
-    except Exception as e:
-        return _err(f"Gagal menganalisis gambar: {e}")
+    return "ERROR: Tool analyze_image sudah tidak digunakan. Model default (meta/muse-glimmer-30b) sudah support vision native. Kirim gambar langsung ke model."
 
 
 DISPATCH = {
@@ -961,7 +908,6 @@ DISPATCH = {
     "searxng_search": searxng_search,
     "browser_control": browser_control,
     "open_editor": open_editor,
-    "analyze_image": analyze_image,
 }
 
 
