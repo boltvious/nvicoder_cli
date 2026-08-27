@@ -337,6 +337,33 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_image",
+            "description": (
+                "Analisis gambar menggunakan model vision (meta/muse-glimmer-30b). Bisa menerima "
+                "file gambar lokal atau URL. Berguna untuk: membaca screenshot error, menganalisis "
+                "UI/UX, OCR teks dari gambar, mendeteksi objek, atau memahami diagram/chart. "
+                "Model vision ini lebih kecil dan cepat dibanding model utama."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "Path file gambar lokal atau URL gambar.",
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "Pertanyaan atau instruksi analisis (opsional, default: 'Deskripsikan gambar ini secara detail').",
+                        "default": "Deskripsikan gambar ini secara detail"
+                    }
+                },
+                "required": ["image_path"]
+            },
+        },
+    },
 ]
 
 
@@ -889,6 +916,40 @@ def open_editor(
             pass
 
 
+def analyze_image(image_path: str, question: str = "Deskripsikan gambar ini secara detail") -> dict:
+    """Analisis gambar menggunakan model vision meta/muse-glimmer-30b.
+    
+    Returns:
+        {"text": str, "images": []} - hasil analisis dari model vision
+    """
+    from .agent import _call_vision_model
+    
+    try:
+        # Cek apakah path file atau URL
+        if image_path.startswith(('http://', 'https://')):
+            # URL - download dulu
+            import urllib.request
+            import tempfile
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
+                urllib.request.urlretrieve(image_path, tmp.name)
+                tmp_path = tmp.name
+            
+            try:
+                result = _call_vision_model(tmp_path, question)
+            finally:
+                os.unlink(tmp_path)
+        else:
+            # Local file
+            if not os.path.isfile(image_path):
+                return {"text": _err(f"File gambar tidak ditemukan: {image_path}"), "images": []}
+            result = _call_vision_model(image_path, question)
+        
+        return {"text": result, "images": []}
+    except Exception as e:
+        return {"text": _err(f"Gagal menganalisis gambar: {e}"), "images": []}
+
+
 DISPATCH = {
     "read_file": read_file,
     "write_file": write_file,
@@ -900,6 +961,7 @@ DISPATCH = {
     "searxng_search": searxng_search,
     "browser_control": browser_control,
     "open_editor": open_editor,
+    "analyze_image": analyze_image,
 }
 
 

@@ -899,3 +899,105 @@ class Agent:
 
         tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)] if tool_calls_acc else None
         return "".join(content_parts), tool_calls, usage_info
+
+
+def _call_vision_model(image_path: str, question: str, max_retries: int = 3) -> str:
+    """Panggil model vision meta/muse-glimmer-30b untuk analisis gambar.
+    
+    Args:
+        image_path: Path ke file gambar lokal
+        question: Pertanyaan/instruksi untuk analisis
+        max_retries: Maksimal percobaan retry
+    
+    Returns:
+        String hasil analisis dari model
+    """
+    import base64
+    from pathlib import Path
+    
+    # Encode gambar ke base64
+    with open(image_path, "rb") as f:
+        image_data = base64.b64encode(f.read()).decode("utf-8")
+    
+    # Detect mime type dari extension
+    ext = Path(image_path).suffix.lower()
+    mime_map = {
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.png': 'image/png', '.gif': 'image/gif',
+        '.webp': 'image/webp', '.bmp': 'image/bmp'
+    }
+    mime_type = mime_map.get(ext, 'image/jpeg')
+    
+    # Setup client dan model
+    vision_model = "meta/muse-glimmer-30b"
+    
+    # Coba dengan provider fallback
+    providers_to_try = ["nvidia", "mistral", "groq"]
+    last_error = None
+    
+    for attempt in range(max_retries):
+        for provider in providers_to_try:
+            try:
+                # Cek circuit breaker
+                if not _can_use_provider(provider):
+                    continue
+                
+                start_time = time.time()
+                
+                # Buat client sesuai provider
+                if provider == "nvidia":
+                    from openai import OpenAI
+                    client = OpenAI(
+                        base_url="https://integrate.api.nvidia.com/v1",
+                        api_key=config.get_nvidia_key()
+                    )
+                elif provider == "mistral":
+                    client = OpenAI(
+                        base_url="https://api.mistral.ai/v1",
+                        api_key=config.get_mistral_key()
+                    )
+                elif provider == "groq":
+                    client = OpenAI(
+                        base_url="https://api.groq.com/openai/v1",
+                        api_key=config.get_groq_key()
+                    )
+                else:
+                    continue
+                
+                # Call model vision
+                response = client.chat.completions.create(
+                    model=vision_model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": question},
+                                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_data}"}}
+                            ]
+                        }
+                    ],
+                    max_tokens=1024
+                )
+                
+                latency_ms = (time.time() - start_time) * 1000
+                _record_provider_success(provider, latency_ms)
+                
+                if response.choices and response.choices[0].message.content:
+                    return response.choices[0].message.content.strip()
+                else:
+                    return "(Tidak ada respons dari model vision)"
+                    
+            except Exception as e:
+                last_error = e
+                _record_provider_failure(provider)
+                
+                # Exponential backoff sebelum retry berikutnya
+                if attempt < max_retries - 1:
+                    delay = _exponential_backoff_with_jitter(attempt)
+                    time.sleep(delay)
+                continue
+    
+    error_msg = f"Gagal memanggil model vision setelah {max_retries} percobaan"
+    if last_error:
+        error_msg += f": {str(last_error)}"
+    return error_msg
