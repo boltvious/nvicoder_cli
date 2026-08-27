@@ -1,41 +1,25 @@
-# Environment & secrets
-.env
-.env.local
-.env.*.local
-
-# Python
+```
+# Compiled and build artifacts
+*.pyc
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
+*.o
+*.obj
+
+# Dependencies
 .venv/
 venv/
-env/
 
-# Build artifacts
-*.egg-info/
-dist/
-build/
-*.whl
+# Logs and temp files
+*.log
+*.tmp
+*.swp
 
-# IDE
+# Environment
+.env
+.env.local
+.env.*
+
+# Editors
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# nvicoder specific
-.nvicoder/sessions/
-.nvicoder/logs/
-.nvicoder/credentials.json
-
-# Logs
-*.log
+```

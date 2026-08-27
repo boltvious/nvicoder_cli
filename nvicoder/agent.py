@@ -379,27 +379,19 @@ class Agent:
 
     def _tool_content(self, result: dict) -> str | list[dict]:
         """Bangun content pesan role='tool' dari hasil tools.execute_tool().
-        Kalau ada gambar (mis. dari runtime_screenshot/get_viewport_screenshot)
-        DAN model aktif support vision (config.is_vision_model) --
-        kirim content-array multimodal (format {"type":"image_url",...})."""
+        
+        PENTING: Untuk model vision seperti meta/muse-glimmer-30b, gambar dari MCP tools
+        TIDAK dikirim via tool result (format ini sering ditolak API), tapi akan di-inject
+        langsung ke user message di run_turn() jika ada gambar."""
         text = result.get("text") or ""
         images = result.get("images") or []
-        if not images:
-            return text
         
-        if config.is_vision_model(self.model):
-            # Model utama support vision -> kirim gambar native
-            blocks: list[dict] = []
-            if text:
-                blocks.append({"type": "text", "text": text})
-            for img in images:
-                blocks.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{img['mime_type']};base64,{img['data']}"},
-                })
-            return blocks
+        # Simpan info gambar untuk di-process di run_turn jika perlu
+        if images and config.is_vision_model(self.model):
+            # Tandai bahwa ada gambar, tapi jangan kirim via tool result
+            # Gambar akan di-inject langsung ke conversation di tempat lain
+            return text + f"\n\n[Ada {len(images)} gambar yang tersedia untuk analisis]"
         
-        # Model utama NON-vision, tapi ada gambar -> return text saja
         return text
 
     def clear(self) -> None:
@@ -597,7 +589,36 @@ class Agent:
                     name, arguments, auto_approve=self.yolo, extra_safe=self.extra_safe_commands,
                     on_always_approve=self._enable_session_yolo,
                 )
-                ui.print_tool_result(result["text"] or f"({len(result['images'])} gambar)")
+                
+                # Handle vision: jika ada gambar dari MCP tool dan model support vision,
+                # inject gambar langsung sebagai user message tambahan (bukan tool result)
+                images = result.get("images") or []
+                if images and config.is_vision_model(self.model):
+                    # Buat user message baru dengan gambar dalam format base64 yang benar
+                    img_descriptions = []
+                    for idx, img in enumerate(images):
+                        # Format data URL yang benar untuk OpenAI/NVIDIA API
+                        data_url = f"data:{img['mime_type']};base64,{img['data']}"
+                        img_descriptions.append(f"Gambar {idx+1} (format: {img['mime_type']})")
+                    
+                    # Inject gambar sebagai user message SEBELUM tool result
+                    # Ini memungkinkan model vision "melihat" gambar secara native
+                    vision_content = [
+                        {"type": "text", "text": f"[MCP Tool '{name}' mengembalikan {len(images)} gambar untuk analisis]"}
+                    ]
+                    for img in images:
+                        data_url = f"data:{img['mime_type']};base64,{img['data']}"
+                        vision_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": data_url}
+                        })
+                    
+                    # Append sebagai user message dengan gambar
+                    self.messages.append({"role": "user", "content": vision_content})
+                    ui.print_info(f"👁️ Vision: {len(images)} gambar di-inject ke conversation")
+                
+                # Tetap append tool result (tanpa gambar, cuma teks)
+                ui.print_tool_result(result["text"] or f"({len(images)} gambar)")
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "content": self._tool_content(result)}
                 )
