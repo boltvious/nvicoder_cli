@@ -100,37 +100,49 @@ def _reasoning_tail(text: str, max_lines: int = REASONING_TAIL_LINES,
     return text
 
 
+def _reasoning_one_line_summary(text: str) -> str:
+    """Buat ringkasan 1 baris dari reasoning text untuk tampilan compact.
+    Menampilkan jumlah baris dan karakter, plus potongan kecil isi reasoning."""
+    if not text:
+        return ""
+    lines = text.splitlines()
+    line_count = len(lines)
+    char_count = len(text)
+    
+    # Ambil potongan kecil dari akhir reasoning untuk preview
+    last_line = lines[-1] if lines else ""
+    if len(last_line) > 40:
+        last_line = "..." + last_line[-37:]
+    
+    if line_count == 1:
+        return f"[dim]⚡ Reasoning: {last_line}[/dim]"
+    else:
+        return f"[dim]⚡ Reasoning ({line_count} baris, {char_count} kar) — klik /reasoning untuk lihat lengkap[/dim]"
+
+
 def render_stream_group(reasoning_text: str, content_text: str, reasoning_done: bool = False):
-    """Gabungan [panel/ringkasan reasoning (kalau ada)] + [markdown jawaban]
+    """Gabungan [ringkasan 1 baris reasoning (kalau ada)] + [markdown jawaban]
     buat ditampilkan lewat Live selama streaming.
 
-    Selama reasoning MASIH JALAN: tampil sebagai panel kecil "jendela geser"
-    yang cuma nunjukin ~REASONING_TAIL_LINES baris terakhir -- baris lama
-    otomatis ketimpa baris baru, bukan numpuk ke bawah tanpa henti.
+    Selama reasoning MASIH JALAN: tampil sebagai ringkasan 1 baris compact
+    yang update real-time dengan potongan isi reasoning.
 
     Begitu reasoning SELESAI (reasoning_done=True, dipicu begitu jawaban
-    final mulai muncul): panel besar itu "dikill" -- diganti satu baris
-    ringkasan redup ("[OK] Reasoning selesai, N baris"), teks lengkapnya
-    tetap tersimpan di Agent.last_reasoning dan bisa dipanggil ulang lewat
-    perintah /reasoning, cuma nggak lagi makan tempat di layar."""
+    final mulai muncul): ringkasan tetap 1 baris dengan info lengkap
+    (jumlah baris & karakter), plus petunjuk ketik /reasoning buat lihat
+    teks lengkapnya. Teks lengkapnya tetap tersimpan di Agent.last_reasoning
+    dan bisa dipanggil ulang lewat perintah /reasoning."""
     parts = []
     if reasoning_text:
+        # Selalu pakai format 1 baris, baik sedang berjalan atau sudah selesai
+        summary = _reasoning_one_line_summary(reasoning_text)
         if reasoning_done:
-            line_count = len(reasoning_text.splitlines())
-            parts.append(Text(
-                f"[OK] Reasoning selesai ({line_count} baris, {len(reasoning_text)} karakter — "
-                f"ketik /reasoning buat lihat lengkap)",
-                style="dim",
-            ))
-        else:
-            parts.append(
-                Panel(
-                    Text(_reasoning_tail(reasoning_text), style="dim italic"),
-                    title="[dim]Reasoning (live, beberapa baris terakhir)[/dim]",
-                    border_style="dim",
-                    expand=False,
-                )
-            )
+            # Tambahkan indikator [OK] kalau sudah selesai
+            lines = reasoning_text.splitlines()
+            line_count = len(lines)
+            char_count = len(reasoning_text)
+            summary = f"[dim][OK] Reasoning selesai ({line_count} baris, {char_count} kar) — ketik /reasoning buat lihat lengkap[/dim]"
+        parts.append(Text.from_markup(summary))
     if content_text:
         parts.append(Markdown(content_text))
     return Group(*parts) if parts else Text("")
