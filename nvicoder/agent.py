@@ -11,6 +11,9 @@ streaming OpenAI-compatible yang juga dipakai NVIDIA NIM.
 import json
 import os
 import time
+import random
+from dataclasses import dataclass, field
+from typing import Optional
 
 from openai import (
     OpenAI, APIError, RateLimitError, AuthenticationError, PermissionDeniedError,
@@ -19,6 +22,131 @@ from openai import (
 
 from . import config, tools, ui
 from .config import ASSISTANT_MODEL, DUAL_MODEL_ENABLED
+
+# Circuit Breaker configuration
+_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5  # jumlah kegagalan sebelum circuit OPEN
+_CIRCUIT_BREAKER_RECOVERY_TIMEOUT = 30.0  # detik sebelum circuit HALF-OPEN
+_CIRCUIT_BREAKER_SUCCESS_THRESHOLD = 3  # sukses berturut-turut di HALF-OPEN untuk CLOSE
+
+@dataclass
+class CircuitBreakerState:
+    """State untuk Circuit Breaker per provider."""
+    failures: int = 0
+    successes: int = 0
+    last_failure_time: float = 0.0
+    state: str = "CLOSED"  # CLOSED, OPEN, HALF-OPEN
+    
+@dataclass
+class ProviderHealth:
+    """Track kesehatan provider untuk smart fallback scoring."""
+    total_requests: int = 0
+    failed_requests: int = 0
+    avg_latency_ms: float = 0.0
+    _latency_samples: list = field(default_factory=list)
+    
+    @property
+    def failure_rate(self) -> float:
+        if self.total_requests == 0:
+            return 0.0
+        return self.failed_requests / self.total_requests
+    
+    @property
+    def health_score(self) -> float:
+        """Score 0-100, makin tinggi makin sehat (untuk fallback priority)."""
+        if self.total_requests == 0:
+            return 100.0  # belum ada data, anggap sehat
+        failure_penalty = self.failure_rate * 50  # max 50 point penalty
+        latency_penalty = min(self.avg_latency_ms / 1000.0 * 20, 20)  # max 20 point penalty
+        return max(0, 100 - failure_penalty - latency_penalty)
+    
+    def record_success(self, latency_ms: float) -> None:
+        self.total_requests += 1
+        self._latency_samples.append(latency_ms)
+        # Keep only last 10 samples for rolling average
+        if len(self._latency_samples) > 10:
+            self._latency_samples.pop(0)
+        self.avg_latency_ms = sum(self._latency_samples) / len(self._latency_samples)
+    
+    def record_failure(self) -> None:
+        self.total_requests += 1
+        self.failed_requests += 1
+
+# Global circuit breaker states dan health tracking per provider
+_circuit_breakers: dict[str, CircuitBreakerState] = {}
+_provider_health: dict[str, ProviderHealth] = {}
+
+def _get_circuit_breaker(provider: str) -> CircuitBreakerState:
+    """Dapatkan atau buat CircuitBreakerState baru untuk provider."""
+    if provider not in _circuit_breakers:
+        _circuit_breakers[provider] = CircuitBreakerState()
+    return _circuit_breakers[provider]
+
+def _get_provider_health(provider: str) -> ProviderHealth:
+    """Dapatkan atau buat ProviderHealth baru untuk provider."""
+    if provider not in _provider_health:
+        _provider_health[provider] = ProviderHealth()
+    return _provider_health[provider]
+
+def _record_provider_success(provider: str, latency_ms: float) -> None:
+    """Catat sukses request ke provider, update circuit breaker dan health."""
+    cb = _get_circuit_breaker(provider)
+    health = _get_provider_health(provider)
+    health.record_success(latency_ms)
+    
+    if cb.state == "HALF-OPEN":
+        cb.successes += 1
+        if cb.successes >= _CIRCUIT_BREAKER_SUCCESS_THRESHOLD:
+            cb.state = "CLOSED"
+            cb.failures = 0
+            cb.successes = 0
+            ui.print_info(f"✅ Circuit breaker untuk '{provider}' CLOSED (pulih total)")
+    elif cb.state == "CLOSED":
+        cb.failures = 0  # Reset failure count on success
+
+def _record_provider_failure(provider: str) -> None:
+    """Catat kegagalan request ke provider, update circuit breaker dan health."""
+    cb = _get_circuit_breaker(provider)
+    health = _get_provider_health(provider)
+    health.record_failure()
+    cb.failures += 1
+    cb.last_failure_time = time.time()
+    cb.successes = 0
+    
+    if cb.state == "CLOSED" and cb.failures >= _CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+        cb.state = "OPEN"
+        ui.print_error(f"⚠️ Circuit breaker untuk '{provider}' OPEN ({cb.failures} kegagalan berturut-turut)")
+    elif cb.state == "HALF-OPEN":
+        cb.state = "OPEN"
+        cb.last_failure_time = time.time()
+        ui.print_error(f"⚠️ Circuit breaker untuk '{provider}' kembali OPEN (gagal di HALF-OPEN)")
+
+def _can_use_provider(provider: str) -> bool:
+    """Cek apakah provider bisa digunakan berdasarkan circuit breaker state."""
+    cb = _get_circuit_breaker(provider)
+    
+    if cb.state == "CLOSED":
+        return True
+    elif cb.state == "OPEN":
+        # Cek apakah sudah waktunya recovery
+        if time.time() - cb.last_failure_time >= _CIRCUIT_BREAKER_RECOVERY_TIMEOUT:
+            cb.state = "HALF-OPEN"
+            cb.successes = 0
+            ui.print_info(f"🔄 Circuit breaker untuk '{provider}' HALF-OPEN (mencoba recovery...)")
+            return True
+        return False
+    else:  # HALF-OPEN
+        return True
+
+def _exponential_backoff_with_jitter(attempt: int, base_delay: float = 1.0, max_delay: float = 60.0) -> float:
+    """Hitung delay dengan exponential backoff + jitter untuk hindari thundering herd.
+    
+    Formula: min(base_delay * 2^attempt + random_jitter, max_delay)
+    Jitter: random value antara 0-25% dari delay untuk variasi
+    """
+    exponential_delay = min(base_delay * (2 ** attempt), max_delay)
+    jitter_range = exponential_delay * 0.25
+    jitter = random.uniform(0, jitter_range)
+    return exponential_delay + jitter
 
 # Rate-limit Mistral (gratis) biasanya per-menit, payload nvicoder >10rb token/request.
 # Jika SEMUA key kena 429, tunggu lalu ulangi dari key pertama -- durasi makin lama.
@@ -495,9 +623,27 @@ class Agent:
 
     def _next_fallback_model(self, tried_providers: set[str]) -> str | None:
         """Model fallback pertama di config.FALLBACK_MODELS yang provider-nya
-        belum dicoba sama sekali di panggilan _create_stream ini."""
+        belum dicoba sama sekali di panggilan _create_stream ini.
+        
+        Menggunakan smart fallback dengan health scoring - pilih provider dengan
+        health score tertinggi yang belum dicoba."""
+        # Filter provider yang belum dicoba dan bisa digunakan (circuit breaker)
+        available_providers = []
         for m in config.FALLBACK_MODELS:
-            if config.provider_for_model(m) not in tried_providers:
+            p = config.provider_for_model(m)
+            if p not in tried_providers and _can_use_provider(p):
+                health = _get_provider_health(p)
+                available_providers.append((m, p, health.health_score))
+        
+        # Sort by health score (descending) untuk pilih yang paling sehat
+        if available_providers:
+            available_providers.sort(key=lambda x: x[2], reverse=True)
+            return available_providers[0][0]
+        
+        # Fallback ke cara lama kalau tidak ada yang tersedia via health scoring
+        for m in config.FALLBACK_MODELS:
+            p = config.provider_for_model(m)
+            if p not in tried_providers:
                 return m
         return None
 
@@ -515,18 +661,40 @@ class Agent:
            provider fallback berikutnya (config.FALLBACK_MODELS, provider yang
            beda dari yang barusan gagal), ganti self.model_override, ulangi
            dari awal. Nyerah cuma kalau semua provider fallback juga sudah
-           dicoba dan gagal (atau FALLBACK_MODELS kosong)."""
+           dicoba dan gagal (atau FALLBACK_MODELS kosong).
+        
+        Circuit Breaker Pattern: Track failure rate per provider, skip provider
+        yang sedang 'OPEN' untuk menghindari wasted requests ke provider down.
+        
+        Exponential Backoff with Jitter: Tambahkan variasi random ke delay retry
+        untuk hindari thundering herd problem saat banyak client retry bersamaan."""
         self._compact_old_tool_results()
         self._compact_long_user_messages()
         profile = self.profile
         tried_providers: set[str] = set()
         last_error: Exception | None = None
+        backoff_attempt = 0  # Track attempt untuk exponential backoff
+        
         while True:
             provider = config.provider_for_model(self.model)
+            
+            # Cek circuit breaker sebelum mencoba provider
+            if not _can_use_provider(provider):
+                ui.print_error(f"⚠️ Circuit breaker untuk '{provider}' OPEN, skipping...")
+                tried_providers.add(provider)
+                next_model = self._next_fallback_model(tried_providers)
+                if next_model is None:
+                    raise last_error or RuntimeError(f"Provider '{provider}' tidak tersedia")
+                ui.print_error(f"Pindah ke fallback: {next_model} ...")
+                self.model_override = next_model
+                continue
+            
             tried_providers.add(provider)
             rate_limit_sweep = 0
             transient_retry = 0
             exhausted = False
+            request_start_time = time.time()
+            
             while True:
                 client = self._client_for(provider)
                 if os.environ.get("NVICODER_DEBUG_DUMP_REQUEST"):
@@ -538,7 +706,7 @@ class Agent:
                             "tools": tools.get_all_tools_schema(),
                         }, _f, ensure_ascii=False)
                 try:
-                    return client.chat.completions.create(
+                    result = client.chat.completions.create(
                         model=config.strip_provider_prefix(self.model),
                         messages=self.messages,
                         tools=tools.get_all_tools_schema(),
@@ -549,8 +717,13 @@ class Agent:
                         stream=True,
                         stream_options={"include_usage": True},
                     )
+                    # Record success untuk health tracking
+                    latency_ms = (time.time() - request_start_time) * 1000
+                    _record_provider_success(provider, latency_ms)
+                    return result
                 except (AuthenticationError, PermissionDeniedError) as e:
                     last_error = e
+                    _record_provider_failure(provider)
                     if provider == "mistral":
                         failed_idx = self._mistral_key_index
                         if self._rotate_mistral_key():
@@ -562,6 +735,7 @@ class Agent:
                     exhausted = True
                 except RateLimitError as e:
                     last_error = e
+                    _record_provider_failure(provider)
                     if provider == "mistral":
                         failed_idx = self._mistral_key_index
                         if self._rotate_mistral_key():
@@ -594,13 +768,18 @@ class Agent:
                     # nyata: "InternalServerError" belum ketangkep sebelum ini,
                     # bikin task game Godot mati mendadak padahal cuma hiccup).
                     last_error = e
+                    _record_provider_failure(provider)
+                    
+                    # Gunakan exponential backoff with jitter untuk retry
                     if transient_retry < len(_TRANSIENT_ERROR_RETRY_WAIT_SECONDS):
-                        wait_s = _TRANSIENT_ERROR_RETRY_WAIT_SECONDS[transient_retry]
+                        base_wait = _TRANSIENT_ERROR_RETRY_WAIT_SECONDS[transient_retry]
+                        wait_s = _exponential_backoff_with_jitter(backoff_attempt, base_wait)
+                        backoff_attempt += 1
                         transient_retry += 1
                         ui.print_error(
                             f"Provider '{provider}' error sesaat ({type(e).__name__}: {e}). "
-                            f"Coba lagi dalam {wait_s:.0f} detik ({transient_retry}/"
-                            f"{len(_TRANSIENT_ERROR_RETRY_WAIT_SECONDS)})..."
+                            f"Coba lagi dalam {wait_s:.1f} detik (exponential backoff + jitter) "
+                            f"({transient_retry}/{len(_TRANSIENT_ERROR_RETRY_WAIT_SECONDS)})..."
                         )
                         time.sleep(wait_s)
                         continue
