@@ -340,6 +340,43 @@ TOOLS_SCHEMA = [
 ]
 
 
+def read_image_base64(path: str) -> str:
+    """Baca file gambar dan kembalikan sebagai string Base64 dengan MIME type.
+    
+    Args:
+        path: Path ke file gambar (relatif atau absolut)
+        
+    Returns:
+        String dalam format: data:{mime_type};base64,{base64_data}
+        atau error message jika gagal.
+    """
+    if not os.path.isfile(path):
+        return f"ERROR: File tidak ditemukan: {path}"
+    
+    # Deteksi MIME type dari extension
+    ext = os.path.splitext(path)[1].lower()
+    mime_map = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.bmp': 'image/bmp',
+        '.svg': 'image/svg+xml',
+    }
+    
+    mime_type = mime_map.get(ext, 'application/octet-stream')
+    
+    try:
+        with open(path, 'rb') as f:
+            image_data = f.read()
+        
+        base64_data = base64.b64encode(image_data).decode('utf-8')
+        return f"data:{mime_type};base64,{base64_data}"
+    except Exception as e:
+        return f"ERROR: Gagal membaca file gambar: {str(e)}"
+
+
 def _err(msg: str) -> str:
     return f"ERROR: {msg}"
 
